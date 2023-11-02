@@ -1,6 +1,11 @@
 # RWKV-CUDA
 The CUDA version of the RWKV language model ( https://github.com/BlinkDL/RWKV-LM )
 
+# Setup
+
+- `nvcc fatal   : Unknown option '-extra-device-vectorization'` => https://github.com/huggingface/transformers/issues/24148#issuecomment-1596691730
+
+
 ## Towards RWKV-4 (see the wkv folder)
 
 I have a basic RWKV-4 kernel in the wkv folder. Let's optimize it.

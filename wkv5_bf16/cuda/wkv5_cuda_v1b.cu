@@ -2,6 +2,7 @@
 #include <assert.h>
 #include "ATen/ATen.h"
 typedef at::BFloat16 bf16;
+#include <iostream>
 
 template <typename F>
 __global__ void kernel_forward(const int B, const int T, const int C, const int H,
@@ -178,8 +179,13 @@ __global__ void kernel_backward(const int B, const int T, const int C, const int
 
 void cuda_forward(int B, int T, int C, int H, bf16 *r, bf16 *k, bf16 *v, float *w, bf16 *u, bf16 *y)
 {
+    // std::cout << "H: " << C << std::endl;    
+    // std::cout << "C: " << C << std::endl;
+    // std::cout << "_N_: " << _N_ << std::endl;
+
     assert(H*_N_ == C);
-    assert(_N_%4 == 0);
+    assert(_N_%4 == 0); // _N_ = HEAD_SIZE run.py:L51
+    
     kernel_forward<<<dim3(B * H), dim3(_N_)>>>(B, T, C, H, r, k, v, w, u, y);
 }
 
