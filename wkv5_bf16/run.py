@@ -13,7 +13,6 @@ torch.backends.cudnn.allow_tf32 = False
 torch.backends.cuda.matmul.allow_tf32 = False
 
 DTYPE = torch.bfloat16
-
 DEVICE = 'cuda'
 CUDA_KERNEL_VERSION = 'v1b'
 
@@ -297,17 +296,18 @@ def CHECK_CORRECTNESS_PYTHON_FLOAT32():
     print('--> [Torch float32 vs PYTHON NAIVE fp32] g_u correct =', torch.allclose(gu, gu_naive_fp32), ', err ratio =', get_err_ratio(gu, gu_naive_fp32))
 
 
-def CHECK_CORRECTNESS_CUDA():
+def CHECK_CORRECTNESS_CUDA_BF16():
     def LOSS(y): # a strange loss for better verification
         return ((y * y) - torch.tanh(y)).sum()
 
     set_seed(42)
     with torch.no_grad():
-        r = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-        k = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-        v = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-        w = torch.zeros(H, device=DEVICE).uniform_(-8, 1).to(dtype=DTYPE).float()
-        u = torch.zeros(H, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
+        r = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).to(dtype=DTYPE)
+        k = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).to(dtype=DTYPE)
+        v = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).to(dtype=DTYPE)
+        w = torch.zeros(H, device=DEVICE).uniform_(-8, 1).to(dtype=DTYPE).to(dtype=DTYPE)
+        u = torch.zeros(H, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).to(dtype=DTYPE)
+    
     r.requires_grad_()
     k.requires_grad_()
     v.requires_grad_()
@@ -315,11 +315,10 @@ def CHECK_CORRECTNESS_CUDA():
     u.requires_grad_()
 
     print(f'B={B} T={T} C={C} HEAD_SIZE={HEAD_SIZE}')
-    assert T % CHUNK_LEN == 0
-    print('[original torch (const w & u within a head)] vs [current cuda]')
+    print('[torch bf16 (const w & u within a head)] vs CUDA bf16')
     rwkv5_torch = RUN_TORCH(chunk_len = CHUNK_LEN)
     
-    # collect fp32 reference values
+    # collect bf16 reference values
     y = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
     LOSS(y).backward()
     
@@ -329,70 +328,35 @@ def CHECK_CORRECTNESS_CUDA():
     gw = w.grad.data.clone()
     gu = u.grad.data.clone()
 
-    # Cast to bf16
-    with torch.no_grad():
-        r = r.to(dtype=DTYPE)
-        k = k.to(dtype=DTYPE)
-        v = v.to(dtype=DTYPE)
-        w = w.to(dtype=DTYPE)
-        u = u.to(dtype=DTYPE)
-    r.requires_grad_()
-    k.requires_grad_()
-    v.requires_grad_()
-    w.requires_grad_()
-    u.requires_grad_()
-    ww = w.unsqueeze(1).repeat(1, HEAD_SIZE)
-    uu = u.unsqueeze(1).repeat(1, HEAD_SIZE)
-
-    ## for i in range(5): # warmup - will freeze at i=3 ?
-    ##     print('warmup', i)
-    ##     y0 = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
-    ##     LOSS(y0).backward()
-    ##     r.grad.data.zero_()
-    ##     k.grad.data.zero_()
-    ##     v.grad.data.zero_()
-    ##     w.grad.data.zero_()
-    ##     u.grad.data.zero_()
-
-    y_torch_bf16 = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
-    print('!!! [Torch float32 vs Torch bf16] correct =', torch.allclose(y, y_torch_bf16.float()), ', err ratio =', get_err_ratio(y, y_torch_bf16.float()))
-
-    LOSS(y_torch_bf16).backward()
-
-    gr_torch_bf16 = r.grad.data.clone()
-    gk_torch_bf16 = k.grad.data.clone()
-    gv_torch_bf16 = v.grad.data.clone()
-    gw_torch_bf16 = w.grad.data.clone()
-    gu_torch_bf16 = u.grad.data.clone()
-
-    print('!!! [Torch float32 vs Torch bf16] g_r correct =', torch.allclose(gr, gr_torch_bf16.float()), ', err ratio =', get_err_ratio(gr, gr_torch_bf16.float()))
-    print('!!! [Torch float32 vs Torch bf16] g_k correct =', torch.allclose(gk, gk_torch_bf16.float()), ', err ratio =', get_err_ratio(gk, gk_torch_bf16.float()))
-    print('!!! [Torch float32 vs Torch bf16] g_v correct =', torch.allclose(gv, gv_torch_bf16.float()), ', err ratio =', get_err_ratio(gv, gv_torch_bf16.float()))
-    print('!!! [Torch float32 vs Torch bf16] g_w correct =', torch.allclose(gw, gw_torch_bf16.float()), ', err ratio =', get_err_ratio(gw, gw_torch_bf16.float()))
-    print('!!! [Torch float32 vs Torch bf16] g_u correct =', torch.allclose(gu, gu_torch_bf16.float()), ', err ratio =', get_err_ratio(gu, gu_torch_bf16.float()))
-
     r.grad.data.zero_()
     k.grad.data.zero_()
     v.grad.data.zero_()
     w.grad.data.zero_()
     u.grad.data.zero_()
 
-    y_cuda_bf16 = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
-    print('!!! [Torch float32 vs CUDA bf16] correct =', torch.allclose(y, y_cuda_bf16.float()), ', err ratio =', get_err_ratio(y, y_cuda_bf16.float()))
+    # collect CUDA bf16 values
+    with torch.no_grad():
+        ww = w.unsqueeze(1).repeat(1, HEAD_SIZE).clone().to(dtype=DTYPE)
+        uu = u.unsqueeze(1).repeat(1, HEAD_SIZE).clone().to(dtype=DTYPE)
+    
+    ww.requires_grad_()
+    uu.requires_grad_()
 
+    y_cuda_bf16 = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
     LOSS(y_cuda_bf16).backward()
 
     gr_cuda_bf16 = r.grad.data.clone()
     gk_cuda_bf16 = k.grad.data.clone()
     gv_cuda_bf16 = v.grad.data.clone()
-    gw_cuda_bf16 = w.grad.data.clone()
-    gu_cuda_bf16 = u.grad.data.clone()
+    gw_cuda_bf16 = ww.grad.data.clone().view(H, C//H).sum(1)
+    gu_cuda_bf16 = uu.grad.data.clone().view(H, C//H).sum(1)
 
-    print('!!! [Torch float32 vs CUDA bf16] g_r correct =', torch.allclose(gr, gr_cuda_bf16.float()), ', err ratio =', get_err_ratio(gr, gr_cuda_bf16.float()))
-    print('!!! [Torch float32 vs CUDA bf16] g_k correct =', torch.allclose(gk, gk_cuda_bf16.float()), ', err ratio =', get_err_ratio(gk, gk_cuda_bf16.float()))
-    print('!!! [Torch float32 vs CUDA bf16] g_v correct =', torch.allclose(gv, gv_cuda_bf16.float()), ', err ratio =', get_err_ratio(gv, gv_cuda_bf16.float()))
-    print('!!! [Torch float32 vs CUDA bf16] g_w correct =', torch.allclose(gw, gw_cuda_bf16.float()), ', err ratio =', get_err_ratio(gw, gw_cuda_bf16.float()))
-    print('!!! [Torch float32 vs CUDA bf16] g_u correct =', torch.allclose(gu, gu_cuda_bf16.float()), ', err ratio =', get_err_ratio(gu, gu_cuda_bf16.float()))
+    print('!!! [Torch bf16 vs CUDA bf16] y correct =', torch.allclose(y, y_cuda_bf16), ', err ratio =', get_err_ratio(y, y_cuda_bf16))
+    print('!!! [Torch bf16 vs CUDA bf16] g_r correct =', torch.allclose(gr, gr_cuda_bf16), ', err ratio =', get_err_ratio(gr, gr_cuda_bf16))
+    print('!!! [Torch bf16 vs CUDA bf16] g_k correct =', torch.allclose(gk, gk_cuda_bf16), ', err ratio =', get_err_ratio(gk, gk_cuda_bf16))
+    print('!!! [Torch bf16 vs CUDA bf16] g_v correct =', torch.allclose(gv, gv_cuda_bf16), ', err ratio =', get_err_ratio(gv, gv_cuda_bf16))
+    print('!!! [Torch bf16 vs CUDA bf16] g_w correct =', torch.allclose(gw, gw_cuda_bf16), ', err ratio =', get_err_ratio(gw, gw_cuda_bf16))
+    print('!!! [Torch bf16 vs CUDA bf16] g_u correct =', torch.allclose(gu, gu_cuda_bf16), ', err ratio =', get_err_ratio(gu, gu_cuda_bf16))
 
 
 ######################################################################################################
@@ -501,14 +465,14 @@ def CHECK_CORRECTNESS_CUDA():
 
 if __name__ == "__main__":
 
-    if JOB == 'check-python-fp32':
-        print(f'\n\nCheck Python correctness (forward + backward) with torch...')
+    if JOB == 'check-python-f32':
+        print('\n\nCheck Python naive (forward + backward) with torch f32 ...')
         CHECK_CORRECTNESS_PYTHON_FLOAT32()
-
-    elif JOB == "check-cuda":
-        print(f'\n\nCheck CUDA kernel (BFLOAT16) v{CUDA_KERNEL_VERSION} correctness (forward + backward) with torch...')
-        CHECK_CORRECTNESS_CUDA()
-
+    elif JOB == "check-cuda-bf16":
+        print(f'\n\nCheck CUDA (BFLOAT16) {CUDA_KERNEL_VERSION} (forward + backward) with torch bf16...')
+        CHECK_CORRECTNESS_CUDA_BF16()
     # elif JOB == "benchmark":
-        # print(f'\n\nCheck CUDA kernel v{CUDA_KERNEL_VERSION} speed...')
-        # CHECK_SPEED()
+    #     print(f'\n\nCheck CUDA kernel {CUDA_KERNEL_VERSION} speed...')
+    #     CHECK_SPEED()
+    else:
+        print(f'Unknown JOB: {JOB}')
