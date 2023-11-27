@@ -89,6 +89,7 @@ class WKV_5(torch.autograd.Function):
             T = ctx.T
             C = ctx.C
             H = ctx.H
+            print(gy.is_contiguous(), gy)
             assert gy.is_contiguous()
             r, k, v, eew, ew, u = ctx.saved_tensors
             gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format) # .uniform_(-1, 1)
@@ -238,11 +239,11 @@ def CHECK_CORRECTNESS_PYTHON_FLOAT32():
 
     # torch
     with torch.no_grad():
-        r = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-        k = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-        v = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-        w = torch.zeros(H, device=DEVICE).uniform_(-8, 1).to(dtype=DTYPE).float()
-        u = torch.zeros(H, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
+        r = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).float()
+        k = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).float()
+        v = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).float()
+        w = torch.zeros(H, device=DEVICE).uniform_(-8, 1).float()
+        u = torch.zeros(H, device=DEVICE).uniform_(-1, 1).float()
     r.requires_grad_()
     k.requires_grad_()
     v.requires_grad_()
@@ -254,7 +255,7 @@ def CHECK_CORRECTNESS_PYTHON_FLOAT32():
     rwkv5_torch = RUN_TORCH(chunk_len = CHUNK_LEN)
 
     # collect fp32 reference values
-    y = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
+    y = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w)), u)
     LOSS(y).backward()
 
     gr = r.grad.data.clone()
@@ -319,7 +320,9 @@ def CHECK_CORRECTNESS_CUDA_BF16():
     rwkv5_torch = RUN_TORCH(chunk_len = CHUNK_LEN)
     
     # collect bf16 reference values
-    y = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
+    y = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w)), u)
+    print(y.grad)
+    print('===========')
     LOSS(y).backward()
     
     gr = r.grad.data.clone()
@@ -359,108 +362,32 @@ def CHECK_CORRECTNESS_CUDA_BF16():
     print('!!! [Torch bf16 vs CUDA bf16] g_u correct =', torch.allclose(gu, gu_cuda_bf16), ', err ratio =', get_err_ratio(gu, gu_cuda_bf16))
 
 
-######################################################################################################
-# Check SPEED
-######################################################################################################
+def CHECK_SPEED():
+    print(f'B={B} T={T} C={C} HEAD_SIZE={HEAD_SIZE}')
+    def LOSS(y): # a strange loss for better verification
+        return ((y * y) - torch.tanh(y)).sum()
 
-# def CHECK_SPEED():
-#     def LOSS(y): # a strange loss for better verification
-#         return ((y * y) - torch.tanh(y)).sum()
+    set_seed(42)
+    with torch.no_grad():
+        r = torch.zeros(B, T, C, requires_grad=True, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE)
+        k = torch.zeros(B, T, C, requires_grad=True, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE)
+        v = torch.zeros(B, T, C, requires_grad=True, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE)
+        w = torch.zeros(H, requires_grad=True, device=DEVICE).uniform_(-8, 1).to(dtype=DTYPE)
+        u = torch.zeros(H, requires_grad=True, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE)
+        ww = w.unsqueeze(1).repeat(1, HEAD_SIZE).clone().to(dtype=DTYPE)
+        uu = u.unsqueeze(1).repeat(1, HEAD_SIZE).clone().to(dtype=DTYPE)
 
-#     set_seed(42)
-#     with torch.no_grad():
-#         r = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-#         k = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-#         v = torch.zeros(B, T, C, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-#         w = torch.zeros(H, device=DEVICE).uniform_(-8, 1).to(dtype=DTYPE).float()
-#         u = torch.zeros(H, device=DEVICE).uniform_(-1, 1).to(dtype=DTYPE).float()
-#     r.requires_grad_()
-#     k.requires_grad_()
-#     v.requires_grad_()
-#     w.requires_grad_()
-#     u.requires_grad_()
+    r.requires_grad_()
+    k.requires_grad_()
+    v.requires_grad_()
+    ww.requires_grad_()
+    uu.requires_grad_()
 
-#     print(f'B={B} T={T} C={C} HEAD_SIZE={HEAD_SIZE}')
-#     assert T % CHUNK_LEN == 0
-#     print('[original torch (const w & u within a head)] vs [current cuda]')
-#     rwkv5_torch = RUN_TORCH(chunk_len = CHUNK_LEN)
+    with torch.autograd.profiler.profile(use_cuda=True) as prof:
+        y = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
+        LOSS(y).backward()
     
-#     # collect fp32 reference values
-#     y = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
-#     LOSS(y).backward()
-#     gr = r.grad.data.clone()
-#     gk = k.grad.data.clone()
-#     gv = v.grad.data.clone()
-#     gw = w.grad.data.clone()
-#     gu = u.grad.data.clone()
-
-#     with torch.no_grad():
-#         r = r.to(dtype=DTYPE)
-#         k = k.to(dtype=DTYPE)
-#         v = v.to(dtype=DTYPE)
-#         w = w.to(dtype=DTYPE)
-#         u = u.to(dtype=DTYPE)
-#     r.requires_grad_()
-#     k.requires_grad_()
-#     v.requires_grad_()
-#     w.requires_grad_()
-#     u.requires_grad_()
-#     ww = w.unsqueeze(1).repeat(1, HEAD_SIZE)
-#     uu = u.unsqueeze(1).repeat(1, HEAD_SIZE)
-
-#     # for i in range(5): # warmup - will freeze at i=3 ?
-#     #     print('warmup', i)
-#     #     y0 = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
-#     #     LOSS(y0).backward()
-#     #     r.grad.data.zero_()
-#     #     k.grad.data.zero_()
-#     #     v.grad.data.zero_()
-#     #     w.grad.data.zero_()
-#     #     u.grad.data.zero_()
-
-#     with torch.autograd.profiler.profile(use_cuda=True) as prof:
-#         y0 = rwkv5_torch.forward(B, T, C, H, r, k, v, torch.exp(-torch.exp(w.float())), u)
-#     print('Torch forward\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=2))
-#     print('!!! Torch correct =', torch.allclose(y, y0.float()), ', err ratio =', get_err_ratio(y, y0.float()))
-
-#     y1 = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
-#     with torch.autograd.profiler.profile(use_cuda=True) as prof:
-#         y1 = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
-#     print('CUDA forward\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=2))
-#     print('!!! CUDA correct =', torch.allclose(y, y1.float()), ', err ratio =', get_err_ratio(y, y1.float()))
-
-#     # with torch.autograd.profiler.profile(use_cuda=True) as prof:
-#     #     LOSS(y0).backward()
-#     # print('Torch backward\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=2))
-#     # gr0 = r.grad.data.clone()
-#     # gk0 = k.grad.data.clone()
-#     # gv0 = v.grad.data.clone()
-#     # gw0 = w.grad.data.clone()
-#     # gu0 = u.grad.data.clone()
-#     # print('!!! Torch g_r correct =', torch.allclose(gr, gr0.float()), ', err ratio =', get_err_ratio(gr, gr0.float()))
-#     # print('!!! Torch g_k correct =', torch.allclose(gk, gk0.float()), ', err ratio =', get_err_ratio(gk, gk0.float()))
-#     # print('!!! Torch g_v correct =', torch.allclose(gv, gv0.float()), ', err ratio =', get_err_ratio(gv, gv0.float()))
-#     # print('!!! Torch g_w correct =', torch.allclose(gw, gw0.float()), ', err ratio =', get_err_ratio(gw, gw0.float()))
-#     # print('!!! Torch g_u correct =', torch.allclose(gu, gu0.float()), ', err ratio =', get_err_ratio(gu, gu0.float()))
-
-#     # r.grad.data.zero_()
-#     # k.grad.data.zero_()
-#     # v.grad.data.zero_()
-#     # w.grad.data.zero_()
-#     # u.grad.data.zero_()
-#     # with torch.autograd.profiler.profile(use_cuda=True) as prof:
-#     #     LOSS(y1).backward()
-#     # print('CUDA backward\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=2))
-#     # gr1 = r.grad.data.clone()
-#     # gk1 = k.grad.data.clone()
-#     # gv1 = v.grad.data.clone()
-#     # gw1 = w.grad.data.clone()
-#     # gu1 = u.grad.data.clone()
-#     # print('!!! CUDA g_r correct =', torch.allclose(gr, gr1.float()), ', err ratio =', get_err_ratio(gr, gr1.float()))
-#     # print('!!! CUDA g_k correct =', torch.allclose(gk, gk1.float()), ', err ratio =', get_err_ratio(gk, gk1.float()))
-#     # print('!!! CUDA g_v correct =', torch.allclose(gv, gv1.float()), ', err ratio =', get_err_ratio(gv, gv1.float()))
-#     # print('!!! CUDA g_w correct =', torch.allclose(gw, gw1.float()), ', err ratio =', get_err_ratio(gw, gw1.float()))
-#     # print('!!! CUDA g_u correct =', torch.allclose(gu, gu1.float()), ', err ratio =', get_err_ratio(gu, gu1.float()))
+    print('CUDA:\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=5))
 
 
 if __name__ == "__main__":
@@ -471,8 +398,8 @@ if __name__ == "__main__":
     elif JOB == "check-cuda-bf16":
         print(f'\n\nCheck CUDA (BFLOAT16) {CUDA_KERNEL_VERSION} (forward + backward) with torch bf16...')
         CHECK_CORRECTNESS_CUDA_BF16()
-    # elif JOB == "benchmark":
-    #     print(f'\n\nCheck CUDA kernel {CUDA_KERNEL_VERSION} speed...')
-    #     CHECK_SPEED()
+    elif JOB == "benchmark":
+        print(f'\n\nCheck CUDA kernel v{CUDA_KERNEL_VERSION} speed...')
+        CHECK_SPEED()
     else:
         print(f'Unknown JOB: {JOB}')
