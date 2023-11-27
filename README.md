@@ -3,6 +3,7 @@ The CUDA version of the RWKV language model ( https://github.com/BlinkDL/RWKV-LM
 
 # Setup
 
+- Use conda (for installation => https://sites.google.com/view/raybellwaves/cheat-sheets/condamamba)
 - `nvcc fatal   : Unknown option '-extra-device-vectorization'` => https://github.com/huggingface/transformers/issues/24148#issuecomment-1596691730
 
 
