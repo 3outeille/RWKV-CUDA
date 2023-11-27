@@ -251,7 +251,7 @@ def CHECK_CORRECTNESS_PYTHON_FLOAT32():
     u.requires_grad_()
 
     print(f'B={B} T={T} C={C} HEAD_SIZE={HEAD_SIZE}')
-    print('[original torch (const w & u within a head)] vs [python naive formula]')
+    print('[Torch (const w & u within a head)] vs Python naive formula')
     rwkv5_torch = RUN_TORCH(chunk_len = CHUNK_LEN)
 
     # collect fp32 reference values
@@ -264,13 +264,6 @@ def CHECK_CORRECTNESS_PYTHON_FLOAT32():
     gw = w.grad.data.clone()
     gu = u.grad.data.clone()
 
-    # TODO: Do we have to zero_grad here ?
-    # r.grad.data.zero_()
-    # k.grad.data.zero_()
-    # v.grad.data.zero_()
-    # w.grad.data.zero_()
-    # u.grad.data.zero_()
-
     # Naive
     with torch.no_grad():
         # the w and u for python version use torch.zeros(C) instead of torch.zeros(H)
@@ -280,19 +273,23 @@ def CHECK_CORRECTNESS_PYTHON_FLOAT32():
     w_naive.requires_grad_()
     u_naive.requires_grad_()
 
+    r.grad.data.zero_()
+    k.grad.data.zero_()
+    v.grad.data.zero_()
+    w.grad.data.zero_()
+    u.grad.data.zero_()
+
     y_naive_fp32 = RUN_FORMULA_1(B, T, C, H, r, k, v, torch.exp(-torch.exp(w_naive)), u_naive)
-    print('!!! [Torch float32 vs PYTHON NAIVE fp32] correct =', torch.allclose(y, y_naive_fp32.float()), ', err ratio =', get_err_ratio(y, y_naive_fp32.float()))
-    
     yy_naive_fp32 = y_naive_fp32.clone().detach().requires_grad_(True)
     LOSS(yy_naive_fp32).backward()
     gy_naive_fp32 = yy_naive_fp32.grad.data.clone()
 
-    #TODO: Need to figure out
-    # # the w and u for python version use torch.zeros(C) instead of torch.zeros(H)
-    gw = w.grad.data.unsqueeze(1).repeat(1, HEAD_SIZE).clone()
-    gu = u.grad.data.unsqueeze(1).repeat(1, HEAD_SIZE).clone() 
-
     gr_naive_fp32, gk_naive_fp32, gv_naive_fp32, gw_naive_fp32, gu_naive_fp32 = RUN_BACKWARD_1(B, T, C, H, gy_naive_fp32, r, k, v, w_naive, u_naive)
+    
+    gw_naive_fp32 = gw_naive_fp32.view(H, C//H).sum(1)
+    gu_naive_fp32 = gu_naive_fp32.view(H, C//H).sum(1)
+
+    print('!!! [Torch float32 vs PYTHON NAIVE fp32] y correct =', torch.allclose(y, y_naive_fp32.float()), ', err ratio =', get_err_ratio(y, y_naive_fp32.float()))
     print('--> [Torch float32 vs PYTHON NAIVE fp32] g_r correct =', torch.allclose(gr, gr_naive_fp32), ', err ratio =', get_err_ratio(gr, gr_naive_fp32))
     print('--> [Torch float32 vs PYTHON NAIVE fp32] g_k correct =', torch.allclose(gk, gk_naive_fp32), ', err ratio =', get_err_ratio(gk, gk_naive_fp32))
     print('--> [Torch float32 vs PYTHON NAIVE fp32] g_v correct =', torch.allclose(gv, gv_naive_fp32), ', err ratio =', get_err_ratio(gv, gv_naive_fp32))
