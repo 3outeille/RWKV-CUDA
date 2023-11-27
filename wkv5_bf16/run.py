@@ -19,20 +19,20 @@ CUDA_KERNEL_VERSION = 'v1b2'
 JOB = sys.argv[1].strip()
 
 # ORIGINAL
-# B = 8
-# T = 4096
-# C = 4096
-# HEAD_SIZE = 128
-# H = C // HEAD_SIZE
-# CHUNK_LEN = 512
+B = 8
+T = 4096
+C = 4096
+HEAD_SIZE = 128
+H = C // HEAD_SIZE
+CHUNK_LEN = 512
 
 # DEBUG
-B = 2
-T = 4
-C = 8
-HEAD_SIZE = 4
-H = C // HEAD_SIZE
-CHUNK_LEN = 2
+# B = 2
+# T = 4
+# C = 8
+# HEAD_SIZE = 4
+# H = C // HEAD_SIZE
+# CHUNK_LEN = 2
 
 
 def set_seed(seed):
@@ -357,7 +357,13 @@ def CHECK_CORRECTNESS_CUDA_BF16():
 
 
 def CHECK_SPEED():
+    print('__CUDNN VERSION:', torch.backends.cudnn.version())
+    print('__Number CUDA Devices:', torch.cuda.device_count())
+    print('__CUDA Device Name:',torch.cuda.get_device_name(0))
+    print('__CUDA Device Total Memory [GB]:',torch.cuda.get_device_properties(0).total_memory/1e9)
+    print("=======")
     print(f'B={B} T={T} C={C} HEAD_SIZE={HEAD_SIZE}')
+    
     def LOSS(y): # a strange loss for better verification
         return ((y * y) - torch.tanh(y)).sum()
 
@@ -377,13 +383,18 @@ def CHECK_SPEED():
     ww.requires_grad_()
     uu.requires_grad_()
 
+    y = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
+
     with torch.autograd.profiler.profile(use_cuda=True) as prof:
         y = RUN_CUDA(B, T, C, H, r, k, v, ww, uu)
+    
+    print('CUDA forward:\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=3))
+    
+    with torch.autograd.profiler.profile(use_cuda=True) as prof:
         LOSS(y).backward()
     
-    print('CUDA:\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=5))
-
-
+    print('CUDA backward:\n', prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_time_total', row_limit=3))
+    
 if __name__ == "__main__":
 
     if JOB == 'check-python-f32':
